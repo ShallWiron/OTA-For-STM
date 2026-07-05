@@ -6,7 +6,7 @@
 #include "stm32f10x_usart.h"
 
 //Ring Buffer 
-#define BUFFER_SIZE 256
+#define BUFFER_SIZE 1024
 
 extern volatile uint8_t Rx_Ring_Buffer[BUFFER_SIZE];
 extern volatile uint8_t Tx_Ring_Buffer[BUFFER_SIZE];
@@ -45,5 +45,9 @@ void UARTx_SendArray(USART_TypeDef* USARTx, uint8_t *data, uint16_t len);
 int UARTx_ReceiveData(USART_TypeDef* USARTx, uint8_t *data);
 int UARTx_ReceiveMsg_ByLength(uint16_t length, uint8_t *data_out);
 int UARTx_ReceiveMsg_ByNewline(uint8_t *data_out);
+
+// Polling Debug Driver
+void UARTx_SendChar_Polling(USART_TypeDef* USARTx, uint8_t ch);
+void UARTx_SendStr_Polling(USART_TypeDef* USARTx, char *str);
 
 #endif

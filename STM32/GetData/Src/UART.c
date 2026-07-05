@@ -252,3 +252,15 @@ void USART3_IRQHandler(void) {
         }
     }
 }
+
+void UARTx_SendChar_Polling(USART_TypeDef* USARTx, uint8_t ch) {
+    while (USART_GetFlagStatus(USARTx, USART_FLAG_TXE) == RESET);
+    USART_SendData(USARTx, ch);
+}
+
+void UARTx_SendStr_Polling(USART_TypeDef* USARTx, char *str) {
+    while (*str) {
+        UARTx_SendChar_Polling(USARTx, *str++);
+    }
+}
+

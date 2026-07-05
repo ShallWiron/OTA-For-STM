@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define CS_PIN 5
-#define CHUNK_SIZE 16
+#define CHUNK_SIZE 256
 
 #define START_BYTE_1 0xAA
 #define START_BYTE_2 0xBB
@@ -58,9 +58,16 @@ uint8_t wait_for_response(uint32_t timeout_ms) {
     AckState_t state = ACK_WAIT_START1;
     uint8_t rx_buffer[6];
     
+    uint8_t debug_rx[300];
+    uint16_t debug_rx_cnt = 0;
+    uint8_t result = OTA_TIMEOUT;
+    
     while (millis() - start_time < timeout_ms) {
         while (Serial2.available() > 0) {
             uint8_t c = Serial2.read();
+            if (debug_rx_cnt < 300) {
+                debug_rx[debug_rx_cnt++] = c;
+            }
             
             switch (state) {
                 case ACK_WAIT_START1:
@@ -107,20 +114,29 @@ uint8_t wait_for_response(uint32_t timeout_ms) {
                     
                     if (calc_crc != recv_crc) {
                         Serial.printf("Loi: CRC phan hoi sai! Calc: %04X, Recv: %04X\n", calc_crc, recv_crc);
-                        return OTA_NACK; 
+                        result = OTA_NACK;
+                        goto exit_wait;
                     }
                     
                     // CRC đúng, trả về Status thực tế
                     uint8_t status = rx_buffer[2];
                     if (status == OTA_ACK || status == OTA_NACK) {
-                        return status;
+                        result = status;
+                        goto exit_wait;
                     }
-                    return OTA_NACK; // Trạng thái lạ
+                    result = OTA_NACK; // Trạng thái lạ
+                    goto exit_wait;
             }
         }
     }
     
-    return OTA_TIMEOUT; // Quá giờ
+exit_wait:
+    Serial.printf("STM32 -> ESP32 (%d bytes): ", debug_rx_cnt);
+    for (uint8_t i = 0; i < debug_rx_cnt; i++) {
+        Serial.printf("%02X ", debug_rx[i]);
+    }
+    Serial.println();
+    return result;
 }
 
 void send_ota_packet(uint8_t command, const uint8_t *payload, uint16_t payload_len) {
@@ -152,6 +168,13 @@ void send_ota_packet(uint8_t command, const uint8_t *payload, uint16_t payload_l
     packet_buffer[index++] = (crc_value >> 8) & 0xFF; 
     packet_buffer[index++] = crc_value & 0xFF;        
     packet_buffer[index++] = END_BYTE;
+
+    // --- PRINT DEBUG ---
+    Serial.printf("ESP32 -> STM32 (%d bytes): ", total_packet_size);
+    for (uint16_t i = 0; i < total_packet_size; i++) {
+        Serial.printf("%02X ", packet_buffer[i]);
+    }
+    Serial.println();
 
     // --- TRUYỀN RA UART ---
     Serial2.write(packet_buffer, total_packet_size);

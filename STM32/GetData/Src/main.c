@@ -1,6 +1,7 @@
 #include "stm32f10x.h"                  // Device header
 #include "UART.h"
 #include "delay.h"
+#include <stdio.h>
 
 #define MAX_LEN 300
 #define MAX_PAYLOAD_SIZE 256
@@ -21,7 +22,6 @@ RxState_t rx_state = STATE_WAIT_START1;
 uint16_t payload_len = 0;
 uint16_t payload_cnt = 0;
 
-uint8_t testArray[12] = {0xAA, 0xBB, 0x01, 0x00, 0x04, 0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0xED}; // Example test array
 uint8_t buffer_input[MAX_LEN];
 uint8_t buffer_output[6];
 uint32_t COUNT = 0;
@@ -141,18 +141,30 @@ void Decode_And_Save(uint8_t byte)
 
 int main()
 {
+	GPIO_InitTypeDef gpioInit;
+	
 	Delay_Init();
 	//Servo_Init();
-	UARTx_Config(USART1, 115200, UART_Remap_None, TX_RX_INTR);
-	//UARTx_SendData(USART1, (uint8_t*)"System Ready!\n");
+	
+	// Cấu hình LED PC13 để báo hiệu trạng thái hoạt động
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOC, ENABLE);
+	gpioInit.GPIO_Mode = GPIO_Mode_Out_PP;
+	gpioInit.GPIO_Pin = GPIO_Pin_13;
+	gpioInit.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_Init(GPIOC, &gpioInit);
+	GPIO_ResetBits(GPIOC, GPIO_Pin_13); // Bật LED (LED trên Blue Pill nối nguồn 3.3V, kéo chân xuống 0 để bật)
+
+	UARTx_Config(USART1, 115200, UART_Remap_None, NO); // Chuyển sang chế độ NO interrupt để test polling
+	//UARTx_SendStr_Polling(USART1, "System Ready!\n");
 	//Servo_Controller(0x00);
-	UARTx_SendArray(USART1, testArray, 12);
 	
 	while(1)
 	{
-		if(Rx_RingBuffer_Read(&temp_byte))
+		// Đọc trực tiếp bằng cách kiểm tra cờ phần cứng RXNE
+		if (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET)
 		{
-			UARTx_SendArray(USART1, testArray, 12);
+			temp_byte = USART_ReceiveData(USART1);
+			//UARTx_SendChar_Polling(USART1, temp_byte); // Echo về ngay lập tức để chẩn đoán phần cứng
 			Decode_And_Save(temp_byte);
 		}
 		
@@ -183,6 +195,9 @@ int main()
                 buffer_output[2] = 0x01; 
             }
 			
+			// Đảo trạng thái LED PC13 báo hiệu đã nhận và xử lý xong gói tin
+			GPIO_WriteBit(GPIOC, GPIO_Pin_13, (BitAction)(1 - GPIO_ReadOutputDataBit(GPIOC, GPIO_Pin_13)));
+			
 			buffer_output[0] = 0xAA;
 			buffer_output[1] = 0xBB;
 			buffer_output[3] = 0x06;
@@ -191,7 +206,40 @@ int main()
 			buffer_output[4] = (out_crc >> 8) & 0xFF;
 			buffer_output[5] = out_crc & 0xFF;
 			
-			UARTx_SendArray(USART1, buffer_output, 6);
+			for (uint16_t i = 0; i < 6; i++) {
+				UARTx_SendChar_Polling(USART1, buffer_output[i]);
+			}
+
+			// Đợi gửi xong byte cuối cùng qua đường truyền vật lý (TC = Transmission Complete)
+			while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET);
+
+			// Nếu có lỗi CRC, gửi thêm thông tin debug dạng chuỗi ASCII để ESP32 in ra
+			if (buffer_output[2] == 0x01) {
+				char debug_msg[100];
+				snprintf(debug_msg, sizeof(debug_msg), 
+						 "[DBG:cal=%04X,rev=%04X,len=%d,cnt=%d,f3=%02X%02X%02X]", 
+						 cal_crc, rev_crc, payload_len, COUNT, 
+						 buffer_input[0], buffer_input[1], buffer_input[2]);
+				UARTx_SendStr_Polling(USART1, debug_msg);
+				// Đợi gửi xong chuỗi debug qua đường truyền vật lý
+				while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET);
+			}
+
+			// Xóa các cờ lỗi Overrun (ORE), Noise (NE), Framing Error (FE) để tránh treo bộ nhận UART
+			if (USART_GetFlagStatus(USART1, USART_FLAG_ORE) != RESET || 
+				USART_GetFlagStatus(USART1, USART_FLAG_FE) != RESET || 
+				USART_GetFlagStatus(USART1, USART_FLAG_NE) != RESET) {
+				volatile uint16_t status = USART1->SR;
+				volatile uint16_t data = USART1->DR;
+				(void)status;
+				(void)data;
+			}
+
+			// Đọc xả sạch toàn bộ dữ liệu thừa/rác còn tồn dư trong thanh ghi dịch
+			while (USART_GetFlagStatus(USART1, USART_FLAG_RXNE) != RESET) {
+				volatile uint8_t temp = USART_ReceiveData(USART1);
+				(void)temp;
+			}
 
 			FINISH = 0;
 		}
