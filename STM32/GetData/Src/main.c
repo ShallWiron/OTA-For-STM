@@ -1,8 +1,13 @@
 #include "stm32f10x.h"                  // Device header
 #include "UART.h"
 #include "delay.h"
+#include "stm32f10x_flash.h"
 #include <stdio.h>
 
+#define APP1_ADDRESS 0x08004000
+#define APP2_ADDRESS 0x08012000
+#define APP1_SIZE 56 // KB
+#define APP2_SIZE 56 // KB
 #define MAX_LEN 300
 #define MAX_PAYLOAD_SIZE 256
 
@@ -27,6 +32,7 @@ uint8_t buffer_output[6];
 uint32_t COUNT = 0;
 uint8_t FINISH = 0;
 uint8_t temp_byte;
+uint32_t current_write_address = APP1_ADDRESS; 
 
 /*Cau truc buffer_input:
 [0], [1]: 0xAA, 0xBB
@@ -41,6 +47,36 @@ uint8_t temp_byte;
 
 [7 + payload_len]: 0xED
 */
+
+typedef void (*pFunction)(void);
+
+void Jump_To_App(uint32_t app_address)
+{
+    // 1. Kiểm tra tính hợp lệ của Stack Pointer (MSP) nằm trong vùng RAM
+    if (((*(__IO uint32_t*)app_address) & 0x2FFE0000 ) == 0x20000000)
+    {
+        // 2. Vô hiệu hóa ngắt toàn cục
+        __disable_irq();
+        
+        // 3. Tắt và reset SysTick Timer
+        SysTick->CTRL = 0;
+        SysTick->VAL = 0;
+        
+        // 4. Tắt toàn bộ ngắt ngoại vi trong NVIC
+        for (uint8_t i = 0; i < 8; i++) {
+            NVIC->ICER[i] = 0xFFFFFFFF;
+            NVIC->ICPR[i] = 0xFFFFFFFF;
+        }
+        
+        // 5. Cài đặt lại Main Stack Pointer (MSP)
+        __set_MSP(*(__IO uint32_t*)app_address);
+        
+        // 6. Lấy địa chỉ của Reset Handler và thực hiện cú nhảy (Jump)
+        uint32_t JumpAddress = *(__IO uint32_t*) (app_address + 4);
+        pFunction Jump = (pFunction) JumpAddress;
+        Jump();
+    }
+}
 
 //Ham CRC check
 uint16_t CRC16_Modbus(uint8_t *buf, uint16_t len)
@@ -139,6 +175,39 @@ void Decode_And_Save(uint8_t byte)
     }
 }
 
+void Erase_Application_Partition(uint32_t start_address, uint32_t size_in_kb)
+{
+    FLASH_Unlock();
+    FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPRTERR);
+
+    for (uint32_t i = 0; i < size_in_kb; i++)
+    {
+        // Mỗi trang cách nhau 1 KB (1024 bytes hay 0x400)
+        uint32_t page_addr = start_address + (i * 1024);
+        FLASH_ErasePage(page_addr);
+    }
+
+    FLASH_Lock();
+}
+
+void Process_Received_Chunk(uint8_t *chunk_buffer, uint32_t chunk_len)
+{
+    // Chỉ ghi trực tiếp, hoàn toàn không có lệnh Erase ở đây!
+    FLASH_Unlock();
+    FLASH_ClearFlag(FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPRTERR);
+
+    for (uint32_t i = 0; i < chunk_len; i += 2)
+    {
+        uint16_t data16 = chunk_buffer[i] | (chunk_buffer[i + 1] << 8);
+        FLASH_ProgramHalfWord(current_write_address + i, data16);
+    }
+    
+    FLASH_Lock();
+
+    // Tăng địa chỉ ghi tiếp theo lên tương ứng với kích thước khối vừa nhận
+    current_write_address += chunk_len; 
+}
+
 int main()
 {
 	GPIO_InitTypeDef gpioInit;
@@ -170,7 +239,7 @@ int main()
 		
 		if(FINISH)
 		{
-			
+			uint8_t trigger_jump = 0;
 			uint16_t crc_data_len = 5 + payload_len;
 			
 			// Tính CRC từ đầu mảng luôn (buffer_input tương đương &buffer_input[0])
@@ -185,6 +254,20 @@ int main()
                 uint8_t cmd = buffer_input[2];
                 
                 // --- Code xử lý Ghi Flash/Reset của cậu ở đây ---
+                switch(cmd) {
+                    case 0x01: // Bat dau OTA: Xoa phan vung va reset dia chi ghi
+                        current_write_address = APP1_ADDRESS; 
+                        Erase_Application_Partition(APP1_ADDRESS, APP1_SIZE); 
+                        break;
+                    case 0x02: // Nhan va ghi khoi du lieu firmware
+                        Process_Received_Chunk(&buffer_input[5], payload_len); 
+                        break;
+                    case 0x03: // Chuan bi nhay sang App moi sau khi phan hoi ACK
+                        trigger_jump = 1;
+                        break;
+                    default:
+                        break;
+                }
                 
                 // Báo hiệu OK
                 buffer_output[2] = 0x00; 
@@ -201,7 +284,7 @@ int main()
 			buffer_output[0] = 0xAA;
 			buffer_output[1] = 0xBB;
 			buffer_output[3] = 0x06;
-
+ 
 			uint16_t out_crc = CRC16_Modbus(buffer_output, 4);
 			buffer_output[4] = (out_crc >> 8) & 0xFF;
 			buffer_output[5] = out_crc & 0xFF;
@@ -209,9 +292,15 @@ int main()
 			for (uint16_t i = 0; i < 6; i++) {
 				UARTx_SendChar_Polling(USART1, buffer_output[i]);
 			}
-
+ 
 			// Đợi gửi xong byte cuối cùng qua đường truyền vật lý (TC = Transmission Complete)
 			while (USART_GetFlagStatus(USART1, USART_FLAG_TC) == RESET);
+ 
+			// Nếu có cờ yêu cầu nhảy, thực hiện nhảy sang App mới
+			if (trigger_jump) {
+				Delay_Ms(100); // Delay ngắn để ESP32 nhận trọn vẹn byte cuối của ACK
+				Jump_To_App(APP1_ADDRESS);
+			}
 
 			// Nếu có lỗi CRC, gửi thêm thông tin debug dạng chuỗi ASCII để ESP32 in ra
 			if (buffer_output[2] == 0x01) {
