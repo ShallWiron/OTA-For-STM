@@ -191,7 +191,7 @@ $(BUILD_DIR):
 # st-flash added by Ngo Hung Cuong
 #######################################		
 flash: $(BUILD_DIR)/$(TARGET).bin
-	st-flash write $< 0x08000000
+	st-flash write $< 0x08004000
 #######################################
 # clean up
 #######################################

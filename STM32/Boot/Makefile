@@ -41,7 +41,10 @@ BUILD_DIR = build
 # C sources
 C_SOURCES =  \
 Src/main.c \
+Src/delay.c \
+Src/UART.c \
 Src/stm32f10x_it.c \
+Src/system_stm32f10x.c \
 Drivers/STM32F10x_StdPeriph_Driver/src/misc.c \
 Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_adc.c \
 Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_bkp.c \
@@ -64,8 +67,7 @@ Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_sdio.c \
 Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_spi.c \
 Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_tim.c \
 Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_usart.c \
-Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_wwdg.c \
-Src/system_stm32f10x.c  
+Drivers/STM32F10x_StdPeriph_Driver/src/stm32f10x_wwdg.c  
 
 # ASM sources
 ASM_SOURCES =  \
